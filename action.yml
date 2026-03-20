@@ -1,0 +1,62 @@
+name: Upyun SH Upload
+description: 将发布产物上传到又拍云并输出公开下载地址
+author: snailuu
+
+branding:
+  icon: upload-cloud
+  color: blue
+
+inputs:
+  service:
+    description: 业务标识，例如 snailsync
+    required: true
+  version:
+    description: 发布版本，例如 v1.2.3
+    required: true
+  files:
+    description: 换行分隔的待上传文件路径列表
+    required: true
+  bucket:
+    description: 又拍云服务名
+    required: true
+  operator:
+    description: 又拍云操作员
+    required: true
+  password:
+    description: 又拍云操作员密码
+    required: true
+  cdn_base_url:
+    description: 对外公开下载域名，例如 https://download.example.com
+    required: true
+  latest:
+    description: 是否同步 latest 目录
+    required: false
+    default: 'true'
+  upload_install_sh:
+    description: 是否发布 install.sh 到固定入口
+    required: false
+    default: 'false'
+  generate_checksums:
+    description: 是否生成并上传 checksums.txt
+    required: false
+    default: 'true'
+  overwrite:
+    description: 是否允许覆盖同版本文件
+    required: false
+    default: 'false'
+
+outputs:
+  version_urls:
+    description: 当前版本文件的公开下载地址列表
+  latest_urls:
+    description: latest 文件的公开下载地址列表
+  install_sh_url:
+    description: install.sh 的固定下载地址
+  manifest_url:
+    description: manifest.json 的公开地址
+  summary_markdown:
+    description: 格式化后的发布摘要 Markdown
+
+runs:
+  using: node24
+  main: dist/index.js
