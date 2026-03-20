@@ -1,0 +1,38 @@
+name: Example Upload Workflow
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  example-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Prepare Example Files
+        run: |
+          mkdir -p dist
+          printf 'binary-content' > dist/snailsync-linux-amd64.tar.gz
+          printf '#!/bin/sh\necho install\n' > dist/install.sh
+
+      - name: Upload To Upyun
+        uses: ./
+        with:
+          service: snailsync
+          version: v0.0.0-example
+          files: |
+            dist/snailsync-linux-amd64.tar.gz
+            dist/install.sh
+          bucket: ${{ secrets.UPYUN_BUCKET }}
+          operator: ${{ secrets.UPYUN_OPERATOR }}
+          password: ${{ secrets.UPYUN_PASSWORD }}
+          cdn_base_url: ${{ secrets.UPYUN_CDN_BASE_URL }}
+          latest: true
+          upload_install_sh: true
+          generate_checksums: true
+          overwrite: false

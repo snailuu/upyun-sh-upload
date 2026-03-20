@@ -1,6 +1,6 @@
 import * as os from 'os';
 import os__default from 'os';
-import 'crypto';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import { promises } from 'fs';
 import 'path';
@@ -32,6 +32,9 @@ import require$$1$5 from 'node:dns';
 import require$$5$3 from 'string_decoder';
 import 'child_process';
 import 'timers';
+import path from 'node:path';
+import { promises as promises$1 } from 'node:fs';
+import { createHash } from 'node:crypto';
 
 // We use any as a valid input type
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -152,6 +155,36 @@ function escapeProperty(s) {
         .replace(/\n/g, '%0A')
         .replace(/:/g, '%3A')
         .replace(/,/g, '%2C');
+}
+
+// For internal use, subject to change.
+// We use any as a valid input type
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function issueFileCommand(command, message) {
+    const filePath = process.env[`GITHUB_${command}`];
+    if (!filePath) {
+        throw new Error(`Unable to find environment variable for file command ${command}`);
+    }
+    if (!fs.existsSync(filePath)) {
+        throw new Error(`Missing file at path: ${filePath}`);
+    }
+    fs.appendFileSync(filePath, `${toCommandValue(message)}${os.EOL}`, {
+        encoding: 'utf8'
+    });
+}
+function prepareKeyValueMessage(key, value) {
+    const delimiter = `ghadelimiter_${crypto.randomUUID()}`;
+    const convertedValue = toCommandValue(value);
+    // These should realistically never happen, but just in case someone finds a
+    // way to exploit uuid generation let's not allow keys or values that contain
+    // the delimiter.
+    if (key.includes(delimiter)) {
+        throw new Error(`Unexpected input: name should not contain the delimiter "${delimiter}"`);
+    }
+    if (convertedValue.includes(delimiter)) {
+        throw new Error(`Unexpected input: value should not contain the delimiter "${delimiter}"`);
+    }
+    return `${key}<<${delimiter}${os.EOL}${convertedValue}${os.EOL}${delimiter}`;
 }
 
 var commonjsGlobal = typeof globalThis !== 'undefined' ? globalThis : typeof window !== 'undefined' ? window : typeof global !== 'undefined' ? global : typeof self !== 'undefined' ? self : {};
@@ -27921,6 +27954,40 @@ var ExitCode;
      */
     ExitCode[ExitCode["Failure"] = 1] = "Failure";
 })(ExitCode || (ExitCode = {}));
+/**
+ * Gets the value of an input.
+ * Unless trimWhitespace is set to false in InputOptions, the value is also trimmed.
+ * Returns an empty string if the value is not defined.
+ *
+ * @param     name     name of the input to get
+ * @param     options  optional. See InputOptions.
+ * @returns   string
+ */
+function getInput(name, options) {
+    const val = process.env[`INPUT_${name.replace(/ /g, '_').toUpperCase()}`] || '';
+    if (options && options.required && !val) {
+        throw new Error(`Input required and not supplied: ${name}`);
+    }
+    if (options && options.trimWhitespace === false) {
+        return val;
+    }
+    return val.trim();
+}
+/**
+ * Sets the value of an output.
+ *
+ * @param     name     name of the output to set
+ * @param     value    value to store. Non-string values will be converted to a string via JSON.stringify
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function setOutput(name, value) {
+    const filePath = process.env['GITHUB_OUTPUT'] || '';
+    if (filePath) {
+        return issueFileCommand('OUTPUT', prepareKeyValueMessage(name, value));
+    }
+    process.stdout.write(os.EOL);
+    issueCommand('set-output', { name }, toCommandValue(value));
+}
 //-----------------------------------------------------------------------
 // Results
 //-----------------------------------------------------------------------
@@ -27941,21 +28008,532 @@ function setFailed(message) {
 function error(message, properties = {}) {
     issueCommand('error', toCommandProperties(properties), message instanceof Error ? message.toString() : message);
 }
-/**
- * Writes info to log with console.log.
- * @param message info message
- */
-function info(message) {
-    process.stdout.write(message + os.EOL);
+
+class ActionInputError extends Error {
+    code = 'ACTION_INPUT_ERROR';
+    constructor(message) {
+        super(message);
+        this.name = 'ActionInputError';
+    }
 }
 
-async function run() {
+function trimSlashes(value) {
+    return value.replace(/^\/+/u, '').replace(/\/+$/u, '');
+}
+function normalizePathSegment(value, fieldName) {
+    const normalizedValue = trimSlashes(value.trim());
+    if (!normalizedValue) {
+        throw new ActionInputError(`输入 ${fieldName} 不能为空。`);
+    }
+    if (normalizedValue === '.' || normalizedValue === '..') {
+        throw new ActionInputError(`输入 ${fieldName} 不能是 . 或 ..。`);
+    }
+    if (/[/\\]/u.test(normalizedValue)) {
+        throw new ActionInputError(`输入 ${fieldName} 不能包含路径分隔符。`);
+    }
+    if (/[\r\n\t]/u.test(normalizedValue)) {
+        throw new ActionInputError(`输入 ${fieldName} 不能包含控制字符。`);
+    }
+    return normalizedValue;
+}
+function normalizeBaseUrl(value) {
+    const parsedUrl = new URL(value.trim());
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+        throw new ActionInputError('输入 cdn_base_url 只能使用 http 或 https 协议。');
+    }
+    const normalizedPath = parsedUrl.pathname.replace(/\/+$/u, '');
+    return `${parsedUrl.origin}${normalizedPath}`;
+}
+function normalizeSourcePath(sourcePath) {
+    const trimmedPath = sourcePath.trim();
+    if (!trimmedPath) {
+        throw new ActionInputError('文件路径不能为空。');
+    }
+    if (/[\r\n\t]/u.test(trimmedPath)) {
+        throw new ActionInputError('文件路径不能包含控制字符。');
+    }
+    const normalizedPath = trimmedPath.replace(/\\/gu, '/').replace(/^\/+/u, '');
+    if (normalizedPath.endsWith('/')) {
+        throw new ActionInputError('文件路径必须指向文件，不能以 / 结尾。');
+    }
+    return normalizedPath;
+}
+function buildStorageKey(...segments) {
+    return segments.map((segment) => trimSlashes(segment)).join('/');
+}
+function buildPublicUrl(baseUrl, key) {
+    const encodedKey = key
+        .split('/')
+        .map((segment) => encodeURIComponent(segment))
+        .join('/');
+    return `${baseUrl}/${encodedKey}`;
+}
+function buildReleaseTargetConfig(inputs) {
+    const service = normalizePathSegment(inputs.service, 'service');
+    const version = normalizePathSegment(inputs.version, 'version');
+    const baseUrl = normalizeBaseUrl(inputs.cdnBaseUrl);
+    const basePath = service;
+    const versionPath = buildStorageKey(service, version);
+    const latestPath = buildStorageKey(service, 'latest');
+    const installShKey = buildStorageKey(service, 'install.sh');
+    const manifestKey = buildStorageKey(versionPath, 'manifest.json');
+    const checksumsKey = buildStorageKey(versionPath, 'checksums.txt');
+    const files = inputs.files.map((sourcePath) => {
+        const normalizedSourcePath = normalizeSourcePath(sourcePath);
+        const fileName = path.posix.basename(normalizedSourcePath);
+        const versionKey = buildStorageKey(versionPath, fileName);
+        const latestKey = buildStorageKey(latestPath, fileName);
+        return {
+            sourcePath,
+            fileName,
+            versionKey,
+            latestKey,
+            versionUrl: buildPublicUrl(baseUrl, versionKey),
+            latestUrl: buildPublicUrl(baseUrl, latestKey)
+        };
+    });
+    return {
+        basePath,
+        versionPath,
+        latestPath,
+        manifestKey,
+        manifestUrl: buildPublicUrl(baseUrl, manifestKey),
+        checksumsKey,
+        checksumsUrl: buildPublicUrl(baseUrl, checksumsKey),
+        installShKey,
+        installShUrl: buildPublicUrl(baseUrl, installShKey),
+        files
+    };
+}
+
+function readRequiredInput(getInput, name) {
+    const value = getInput(name).trim();
+    if (!value) {
+        throw new ActionInputError(`输入 ${name} 不能为空。`);
+    }
+    return value;
+}
+function parseFilesInput(value) {
+    const files = value
+        .split(/\r?\n/u)
+        .map((item) => item.trim())
+        .filter(Boolean);
+    if (files.length === 0) {
+        throw new ActionInputError('输入 files 至少需要包含一个文件路径。');
+    }
+    return files;
+}
+function parseBooleanInput(getInput, name, defaultValue) {
+    const rawValue = getInput(name).trim().toLowerCase();
+    if (!rawValue) {
+        return defaultValue;
+    }
+    if (['true', '1', 'yes'].includes(rawValue)) {
+        return true;
+    }
+    if (['false', '0', 'no'].includes(rawValue)) {
+        return false;
+    }
+    throw new ActionInputError(`输入 ${name} 只能是 true/false、1/0、yes/no。`);
+}
+function parseActionInputs(getInput$1 = getInput) {
+    const service = readRequiredInput(getInput$1, 'service');
+    const version = readRequiredInput(getInput$1, 'version');
+    const files = parseFilesInput(getInput$1('files'));
+    const bucket = readRequiredInput(getInput$1, 'bucket');
+    const operator = readRequiredInput(getInput$1, 'operator');
+    const password = readRequiredInput(getInput$1, 'password');
+    const cdnBaseUrl = readRequiredInput(getInput$1, 'cdn_base_url');
+    return {
+        service,
+        version,
+        files,
+        bucket,
+        operator,
+        password,
+        cdnBaseUrl,
+        latest: parseBooleanInput(getInput$1, 'latest', true),
+        uploadInstallSh: parseBooleanInput(getInput$1, 'upload_install_sh', false),
+        generateChecksums: parseBooleanInput(getInput$1, 'generate_checksums', true),
+        overwrite: parseBooleanInput(getInput$1, 'overwrite', false)
+    };
+}
+
+function joinLines(lines) {
+    return lines.join('\n');
+}
+function buildActionOutputs(input) {
+    return {
+        version_urls: joinLines(input.versionUrls),
+        latest_urls: joinLines(input.latestUrls),
+        install_sh_url: input.installShUrl ?? '',
+        manifest_url: input.manifestUrl,
+        summary_markdown: input.summaryMarkdown
+    };
+}
+
+function renderUrlList(urls) {
+    if (urls.length === 0) {
+        return '- 无\n';
+    }
+    return urls.map((url) => `- ${url}\n`).join('');
+}
+function createSuccessSummary(input) {
+    let markdown = `## 又拍云发布成功
+
+- 服务：${input.service}
+- 版本：${input.version}
+
+### 下载地址
+`;
+    if (input.installShUrl) {
+        markdown += `- install.sh: ${input.installShUrl}\n`;
+    }
+    markdown += '\n### Version 地址\n';
+    markdown += renderUrlList(input.versionUrls);
+    markdown += '\n### Latest 地址\n';
+    markdown += renderUrlList(input.latestUrls);
+    markdown += '\n### 附加文件\n';
+    markdown += `- manifest: ${input.manifestUrl}\n`;
+    if (input.checksumsUrl) {
+        markdown += `- checksums: ${input.checksumsUrl}\n`;
+    }
+    return markdown;
+}
+function createFailureSummary(input) {
+    return `## 又拍云发布失败
+
+- 服务：${input.service}
+- 版本：${input.version}
+- 失败阶段：${input.failedPhase}
+
+### 已上传地址
+${renderUrlList(input.uploadedUrls)}`;
+}
+async function writeJobSummary(markdown, writeFile = promises$1.writeFile, summaryPath = process.env.GITHUB_STEP_SUMMARY) {
+    if (!summaryPath) {
+        return;
+    }
+    await writeFile(summaryPath, markdown, 'utf8');
+}
+
+function createMd5(content) {
+    return createHash('md5').update(content).digest('hex');
+}
+function createAuthorization(method, uri, date, contentMd5, operator, password) {
+    const passwordMd5 = createMd5(password);
+    const signature = createMd5(`${method}&${uri}&${date}&${contentMd5}&${passwordMd5}`);
+    return `UPYUN ${operator}:${signature}`;
+}
+async function parseError(response) {
     try {
-        info('upyun-sh-upload action 已初始化，等待后续模块接入。');
+        const payload = (await response.json());
+        return payload.msg ?? payload.message ?? payload.code ?? response.statusText;
+    }
+    catch {
+        return response.statusText;
+    }
+}
+function createUpyunClient(options) {
+    const endpoint = options.endpoint ?? 'https://v0.api.upyun.com';
+    const fetchImpl = options.fetchImpl ?? fetch;
+    async function exists(key) {
+        const uri = `/${options.bucket}/${key}`;
+        const date = new Date().toUTCString();
+        const response = await fetchImpl(`${endpoint}${uri}`, {
+            method: 'HEAD',
+            headers: {
+                Date: date,
+                Authorization: createAuthorization('HEAD', uri, date, '', options.operator, options.password)
+            }
+        });
+        if (response.status === 404) {
+            return false;
+        }
+        if (!response.ok) {
+            throw new Error(await parseError(response));
+        }
+        return true;
+    }
+    async function upload(item) {
+        if (!item.overwrite && (await exists(item.key))) {
+            throw new Error(`远程文件已存在：${item.key}`);
+        }
+        const uri = `/${options.bucket}/${item.key}`;
+        const date = new Date().toUTCString();
+        const contentMd5 = createMd5(item.content);
+        const response = await fetchImpl(`${endpoint}${uri}`, {
+            method: 'PUT',
+            headers: {
+                Authorization: createAuthorization('PUT', uri, date, contentMd5, options.operator, options.password),
+                Date: date,
+                'Content-MD5': contentMd5,
+                'Content-Length': String(item.content.byteLength),
+                'Content-Type': item.contentType
+            },
+            body: item.content
+        });
+        if (!response.ok) {
+            throw new Error(await parseError(response));
+        }
+    }
+    return {
+        exists,
+        upload
+    };
+}
+
+function createSha256(content) {
+    return createHash('sha256').update(content).digest('hex');
+}
+function buildManifestEntries(fileTargets, fileContents) {
+    return fileTargets.map((target) => {
+        const content = fileContents[target.sourcePath];
+        if (content === undefined) {
+            throw new Error(`缺少文件内容：${target.sourcePath}`);
+        }
+        const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content);
+        return {
+            fileName: target.fileName,
+            size: buffer.byteLength,
+            sha256: createSha256(buffer),
+            versionUrl: target.versionUrl,
+            latestUrl: target.latestUrl
+        };
+    });
+}
+function buildReleaseManifest(input) {
+    return input;
+}
+function renderChecksums(files) {
+    return files.map((file) => `${file.sha256}  ${file.fileName}\n`).join('');
+}
+
+class UploadPhaseError extends Error {
+    phase;
+    uploadedUrls;
+    summaryMarkdown;
+    constructor(phase, uploadedUrls, summaryMarkdown, message) {
+        super(message);
+        this.phase = phase;
+        this.uploadedUrls = uploadedUrls;
+        this.summaryMarkdown = summaryMarkdown;
+        this.name = 'UploadPhaseError';
+    }
+}
+function guessContentType(fileName) {
+    if (fileName.endsWith('.json'))
+        return 'application/json';
+    if (fileName.endsWith('.txt'))
+        return 'text/plain; charset=utf-8';
+    if (fileName.endsWith('.sh'))
+        return 'text/x-shellscript';
+    if (fileName.endsWith('.tar.gz') || fileName.endsWith('.gz')) {
+        return 'application/gzip';
+    }
+    if (fileName.endsWith('.zip'))
+        return 'application/zip';
+    return 'application/octet-stream';
+}
+function toBuffer(content) {
+    return Buffer.from(content, 'utf8');
+}
+async function prepareUploadPlan(inputs, config, readFile, options = {}) {
+    const fileContents = Object.fromEntries(await Promise.all(config.files.map(async (file) => [
+        file.sourcePath,
+        await readFile(file.sourcePath)
+    ])));
+    const manifestEntries = buildManifestEntries(config.files, fileContents);
+    const manifest = buildReleaseManifest({
+        service: inputs.service,
+        version: inputs.version,
+        generatedAt: options.generatedAt ?? new Date().toISOString(),
+        files: manifestEntries
+    });
+    const manifestContent = toBuffer(`${JSON.stringify(manifest, null, 2)}\n`);
+    const checksumsContent = toBuffer(renderChecksums(manifestEntries));
+    const versionUploads = config.files.map((file) => ({
+        key: file.versionKey,
+        content: fileContents[file.sourcePath],
+        contentType: guessContentType(file.fileName),
+        overwrite: inputs.overwrite,
+        publicUrl: file.versionUrl
+    }));
+    versionUploads.push({
+        key: config.manifestKey,
+        content: manifestContent,
+        contentType: 'application/json',
+        overwrite: inputs.overwrite,
+        publicUrl: config.manifestUrl
+    });
+    let checksumsUrl;
+    if (inputs.generateChecksums) {
+        checksumsUrl = config.checksumsUrl;
+        versionUploads.push({
+            key: config.checksumsKey,
+            content: checksumsContent,
+            contentType: 'text/plain; charset=utf-8',
+            overwrite: inputs.overwrite,
+            publicUrl: config.checksumsUrl
+        });
+    }
+    const latestUploads = inputs.latest
+        ? config.files.map((file) => ({
+            key: file.latestKey,
+            content: fileContents[file.sourcePath],
+            contentType: guessContentType(file.fileName),
+            overwrite: true,
+            publicUrl: file.latestUrl
+        }))
+        : [];
+    let installShUpload;
+    if (inputs.uploadInstallSh) {
+        const installTarget = config.files.find((file) => file.fileName === 'install.sh');
+        if (!installTarget) {
+            throw new ActionInputError('启用 upload_install_sh 时，files 中必须包含 install.sh。');
+        }
+        installShUpload = {
+            key: config.installShKey,
+            content: fileContents[installTarget.sourcePath],
+            contentType: guessContentType(installTarget.fileName),
+            overwrite: true,
+            publicUrl: config.installShUrl
+        };
+    }
+    return {
+        service: inputs.service,
+        version: inputs.version,
+        versionUploads,
+        latestUploads,
+        installShUpload,
+        versionUrls: config.files.map((file) => file.versionUrl),
+        latestUrls: config.files.map((file) => file.latestUrl),
+        installShUrl: config.installShUrl,
+        manifestUrl: config.manifestUrl,
+        checksumsUrl
+    };
+}
+async function uploadBatch(uploads, upload, uploadedUrls) {
+    for (const item of uploads) {
+        await upload(item);
+        uploadedUrls.push(item.publicUrl);
+    }
+}
+async function publishRelease(client, plan) {
+    const uploadedUrls = [];
+    try {
+        await uploadBatch(plan.versionUploads, client.upload, uploadedUrls);
     }
     catch (error) {
-        if (error instanceof Error)
-            setFailed(error.message);
+        const summaryMarkdown = createFailureSummary({
+            service: plan.service,
+            version: plan.version,
+            failedPhase: 'version',
+            uploadedUrls
+        });
+        throw new UploadPhaseError('version', uploadedUrls, summaryMarkdown, error instanceof Error ? error.message : 'version 上传失败');
+    }
+    try {
+        await uploadBatch(plan.latestUploads, client.upload, uploadedUrls);
+    }
+    catch (error) {
+        const summaryMarkdown = createFailureSummary({
+            service: plan.service,
+            version: plan.version,
+            failedPhase: 'latest',
+            uploadedUrls
+        });
+        throw new UploadPhaseError('latest', uploadedUrls, summaryMarkdown, error instanceof Error ? error.message : 'latest 上传失败');
+    }
+    if (plan.installShUpload) {
+        try {
+            await client.upload(plan.installShUpload);
+            uploadedUrls.push(plan.installShUpload.publicUrl);
+        }
+        catch (error) {
+            const summaryMarkdown = createFailureSummary({
+                service: plan.service,
+                version: plan.version,
+                failedPhase: 'install.sh',
+                uploadedUrls
+            });
+            throw new UploadPhaseError('install.sh', uploadedUrls, summaryMarkdown, error instanceof Error ? error.message : 'install.sh 上传失败');
+        }
+    }
+    return {
+        versionUrls: plan.versionUrls,
+        latestUrls: plan.latestUploads.length > 0 ? plan.latestUrls : [],
+        installShUrl: plan.installShUpload ? plan.installShUrl : undefined,
+        manifestUrl: plan.manifestUrl,
+        checksumsUrl: plan.checksumsUrl,
+        summaryMarkdown: createSuccessSummary({
+            service: plan.service,
+            version: plan.version,
+            installShUrl: plan.installShUpload ? plan.installShUrl : undefined,
+            versionUrls: plan.versionUrls,
+            latestUrls: plan.latestUploads.length > 0 ? plan.latestUrls : [],
+            manifestUrl: plan.manifestUrl,
+            checksumsUrl: plan.checksumsUrl
+        })
+    };
+}
+
+async function run(overrides = {}) {
+    await runWithDependencies({
+        parseActionInputs,
+        buildReleaseTargetConfig,
+        createUpyunClient,
+        prepareUploadPlan,
+        publishRelease,
+        writeJobSummary,
+        ...overrides
+    });
+}
+async function runWithDependencies(deps) {
+    try {
+        const inputs = deps.parseActionInputs();
+        const config = deps.buildReleaseTargetConfig(inputs);
+        const client = deps.createUpyunClient({
+            bucket: inputs.bucket,
+            operator: inputs.operator,
+            password: inputs.password
+        });
+        const plan = await deps.prepareUploadPlan(inputs, config, async (filePath) => {
+            const { promises: fs } = await import('node:fs');
+            return fs.readFile(filePath);
+        });
+        const report = await deps.publishRelease(client, plan);
+        const outputs = buildActionOutputs({
+            versionUrls: report.versionUrls,
+            latestUrls: report.latestUrls,
+            installShUrl: report.installShUrl,
+            manifestUrl: report.manifestUrl,
+            summaryMarkdown: report.summaryMarkdown
+        });
+        for (const [key, value] of Object.entries(outputs)) {
+            setOutput(key, value);
+        }
+        await deps.writeJobSummary(report.summaryMarkdown);
+    }
+    catch (error) {
+        const message = error instanceof Error
+            ? error.message
+            : typeof error === 'object' &&
+                error !== null &&
+                'message' in error &&
+                typeof error.message === 'string'
+                ? error.message
+                : '未知错误';
+        const summaryMarkdown = typeof error === 'object' &&
+            error !== null &&
+            'summaryMarkdown' in error &&
+            typeof error.summaryMarkdown === 'string'
+            ? error.summaryMarkdown
+            : undefined;
+        if (summaryMarkdown) {
+            await deps.writeJobSummary(summaryMarkdown);
+        }
+        setFailed(message);
     }
 }
 
