@@ -101,8 +101,8 @@ Action 成功运行后，会在 Job Summary 中展示：
 ## 开发命令
 
 ```bash
-npm ci
-npm test
-npm run lint
-npm run package
+pnpm install --frozen-lockfile
+pnpm test
+pnpm run lint
+pnpm run package
 ```
