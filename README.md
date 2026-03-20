@@ -3,18 +3,20 @@
 [![CI](https://github.com/snailuu/upyun-sh-upload/actions/workflows/ci.yml/badge.svg)](https://github.com/snailuu/upyun-sh-upload/actions/workflows/ci.yml)
 [![Check dist](https://github.com/snailuu/upyun-sh-upload/actions/workflows/check-dist.yml/badge.svg)](https://github.com/snailuu/upyun-sh-upload/actions/workflows/check-dist.yml)
 
-将私有仓库的发布产物上传到又拍云，并输出一组可公开访问的下载地址、`manifest.json`、`checksums.txt` 和 Job Summary。
+将私有仓库的发布产物上传到又拍云，并输出一组可公开访问的下载地址、`manifest.json`、`checksums.txt`
+和 Job Summary。
 
 这个 Action 适合这样的场景：代码仓库保持私有，但安装脚本、二进制包和元数据需要通过公开 CDN 地址分发给最终用户。
 
-> [!TIP]
-> 这个 Action 只负责上传与汇总，不限制触发方式。你可以在 `release`、`workflow_dispatch`、标签推送或任意自定义 workflow 中调用它。
+> [!TIP] 这个 Action 只负责上传与汇总，不限制触发方式。你可以在
+> `release`、`workflow_dispatch`、标签推送或任意自定义 workflow 中调用它。
 
 ## 为什么用它
 
 - 私有仓库无法直接用 `raw.githubusercontent.com` 暴露安装脚本和发布产物。
 - 又拍云可以承接公开下载流量，而发布流程仍然留在 GitHub Actions 中统一执行。
-- Action 会自动整理版本目录、`latest` 目录和固定入口 `install.sh`，减少发布脚本分叉。
+- Action 会自动整理版本目录、`latest` 目录和固定入口
+  `install.sh`，减少发布脚本分叉。
 - 成功执行后会在 Job Summary 中展示所有上传地址，方便人工核对和后续复制。
 
 ## 会发布什么
@@ -95,7 +97,8 @@ jobs:
 
 ## 工作方式
 
-Action 会先读取 `files` 中声明的本地文件，再根据 `service`、`version` 和 `cdn_base_url` 生成一组规范化的目标路径与公开地址。
+Action 会先读取 `files` 中声明的本地文件，再根据 `service`、`version` 和
+`cdn_base_url` 生成一组规范化的目标路径与公开地址。
 
 以如下输入为例：
 
@@ -118,8 +121,8 @@ https://download.example.com/snailsync/latest/install.sh
 https://download.example.com/snailsync/install.sh
 ```
 
-> [!NOTE]
-> 当 `upload_install_sh: true` 时，`files` 中必须包含名为 `install.sh` 的文件，否则 Action 会直接失败。
+> [!NOTE] 当 `upload_install_sh: true` 时，`files` 中必须包含名为 `install.sh`
+> 的文件，否则 Action 会直接失败。
 
 ## 输入参数
 
