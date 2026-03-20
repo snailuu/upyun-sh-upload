@@ -16,7 +16,9 @@ export interface ReleaseTargetConfig {
   versionPath: string
   latestPath: string
   manifestKey: string
+  manifestUrl: string
   checksumsKey: string
+  checksumsUrl: string
   installShKey: string
   installShUrl: string
   files: ReleaseFileTarget[]
@@ -129,7 +131,9 @@ export function buildReleaseTargetConfig(
     versionPath,
     latestPath,
     manifestKey,
+    manifestUrl: buildPublicUrl(baseUrl, manifestKey),
     checksumsKey,
+    checksumsUrl: buildPublicUrl(baseUrl, checksumsKey),
     installShKey,
     installShUrl: buildPublicUrl(baseUrl, installShKey),
     files

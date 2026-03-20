@@ -26,7 +26,13 @@ describe('config.ts', () => {
     expect(config.versionPath).toBe('snailsync/v1.2.3')
     expect(config.latestPath).toBe('snailsync/latest')
     expect(config.manifestKey).toBe('snailsync/v1.2.3/manifest.json')
+    expect(config.manifestUrl).toBe(
+      'https://download.example.com/releases/snailsync/v1.2.3/manifest.json'
+    )
     expect(config.checksumsKey).toBe('snailsync/v1.2.3/checksums.txt')
+    expect(config.checksumsUrl).toBe(
+      'https://download.example.com/releases/snailsync/v1.2.3/checksums.txt'
+    )
     expect(config.installShKey).toBe('snailsync/install.sh')
     expect(config.installShUrl).toBe(
       'https://download.example.com/releases/snailsync/install.sh'

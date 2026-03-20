@@ -1,3 +1,5 @@
+import { promises as fs } from 'node:fs'
+
 export interface SuccessSummaryInput {
   service: string
   version: string
@@ -59,4 +61,16 @@ export function createFailureSummary(input: FailureSummaryInput): string {
 
 ### 已上传地址
 ${renderUrlList(input.uploadedUrls)}`
+}
+
+export async function writeJobSummary(
+  markdown: string,
+  writeFile: typeof fs.writeFile = fs.writeFile,
+  summaryPath = process.env.GITHUB_STEP_SUMMARY
+): Promise<void> {
+  if (!summaryPath) {
+    return
+  }
+
+  await writeFile(summaryPath, markdown, 'utf8')
 }
