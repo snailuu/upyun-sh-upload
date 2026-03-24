@@ -34,7 +34,7 @@ import 'child_process';
 import 'timers';
 import path from 'node:path';
 import { promises as promises$1 } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 
 // We use any as a valid input type
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -28308,9 +28308,15 @@ async function writeJobSummary(markdown, writeFile = promises$1.writeFile, summa
 function createMd5(content) {
     return createHash('md5').update(content).digest('hex');
 }
+function hmacSha1Base64(key, value) {
+    return createHmac('sha1', key).update(value).digest('base64');
+}
 function createAuthorization(method, uri, date, contentMd5, operator, password) {
     const passwordMd5 = createMd5(password);
-    const signature = createMd5(`${method}&${uri}&${date}&${contentMd5}&${passwordMd5}`);
+    const parts = [method, uri, date];
+    if (contentMd5)
+        parts.push(contentMd5);
+    const signature = hmacSha1Base64(passwordMd5, parts.join('&'));
     return `UPYUN ${operator}:${signature}`;
 }
 async function parseError(response) {

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, createHmac } from 'node:crypto'
 
 export interface UpyunUploadItem {
   key: string
@@ -20,6 +20,10 @@ function createMd5(content: Buffer | string): string {
   return createHash('md5').update(content).digest('hex')
 }
 
+function hmacSha1Base64(key: string, value: string): string {
+  return createHmac('sha1', key).update(value).digest('base64')
+}
+
 function createAuthorization(
   method: 'PUT' | 'HEAD',
   uri: string,
@@ -29,9 +33,9 @@ function createAuthorization(
   password: string
 ): string {
   const passwordMd5 = createMd5(password)
-  const signature = createMd5(
-    `${method}&${uri}&${date}&${contentMd5}&${passwordMd5}`
-  )
+  const parts = [method, uri, date]
+  if (contentMd5) parts.push(contentMd5)
+  const signature = hmacSha1Base64(passwordMd5, parts.join('&'))
 
   return `UPYUN ${operator}:${signature}`
 }
